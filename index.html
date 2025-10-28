@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Word DOCX Lossless Compressor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- JSZip for reading/writing DOCX -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 2rem; }
+    .wrap { max-width: 680px; margin: 0 auto; }
+    h1 { margin: 0 0 1rem; font-size: 1.6rem; }
+    p { margin: 0.5rem 0; line-height: 1.5; }
+    .card { border: 1px solid #ccc; border-radius: 12px; padding: 1rem; }
+    .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.75rem; }
+    input[type="file"] { padding: 0.5rem; }
+    button { padding: 0.65rem 1rem; border: 0; border-radius: 10px; font-weight: 600; cursor: pointer; }
+    button.primary { background: #2563eb; color: #fff; }
+    button[disabled] { opacity: 0.6; cursor: not-allowed; }
+    .muted { opacity: 0.8; font-size: 0.95rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .stats { margin-top: 1rem; padding: 0.75rem; border-radius: 10px; background: rgba(0,0,0,.04); }
+    progress { width: 100%; height: 12px; }
+    .ok { color: #16a34a; font-weight: 600; }
+    .err { color: #dc2626; font-weight: 600; }
+    footer { margin-top: 1.5rem; font-size: .9rem; opacity: .75; }
+    .hint { font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Word DOCX Lossless Compressor</h1>
+    <div class="card">
+      <p>Select a <strong>.docx</strong> or <strong>.docm</strong> file. This tool recompresses the internal ZIP with max DEFLATE (lossless) and returns a smaller DOCX, when possible.</p>
+      <div class="row">
+        <input id="fileInput" type="file" accept=".docx,.docm,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-word.document.macroEnabled.12" />
+        <button id="goBtn" class="primary" disabled>Compress</button>
+      </div>
+      <p id="fileInfo" class="muted"></p>
+
+      <div id="work" class="stats" style="display:none">
+        <p class="muted">Working… This runs entirely in your browser.</p>
+        <progress id="prog" max="100" value="0"></progress>
+      </div>
+
+      <div id="result" class="stats" style="display:none"></div>
+      <div id="error" class="stats err" style="display:none"></div>
+      <p class="hint muted">Tip: Images inside a DOCX are already compressed; savings vary. You’ll usually see the most benefit on documents created by tools that didn’t use optimal ZIP settings.</p>
+    </div>
+
+    <footer>
+      <p><strong>Privacy:</strong> Files never leave your device. No servers involved.</p>
+    </footer>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const goBtn = document.getElementById('goBtn');
+    const fileInfo = document.getElementById('fileInfo');
+    const workBox = document.getElementById('work');
+    const prog = document.getElementById('prog');
+    const result = document.getElementById('result');
+    const errorBox = document.getElementById('error');
+
+    let selectedFile = null;
+
+    const prettyBytes = (bytes) => {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    const isDocxLike = (file) => {
+      const name = (file?.name || '').toLowerCase();
+      const extOK = name.endsWith('.docx') || name.endsWith('.docm');
+      return extOK;
+    };
+
+    fileInput.addEventListener('change', () => {
+      errorBox.style.display = 'none';
+      result.style.display = 'none';
+      workBox.style.display = 'none';
+      prog.value = 0;
+
+      selectedFile = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+
+      if (!selectedFile) {
+        fileInfo.textContent = '';
+        goBtn.disabled = true;
+        return;
+      }
+
+      if (!isDocxLike(selectedFile)) {
+        fileInfo.innerHTML = `Selected: <span class="mono">${selectedFile.name}</span> — ${prettyBytes(selectedFile.size)}<br><span class="err">Only .docx / .docm are supported for lossless recompression.</span>`;
+        goBtn.disabled = true;
+        return;
+      }
+
+      fileInfo.innerHTML = `Selected: <span class="mono">${selectedFile.name}</span> — ${prettyBytes(selectedFile.size)}`;
+      goBtn.disabled = false;
+    });
+
+    goBtn.addEventListener('click', async () => {
+      errorBox.style.display = 'none';
+      result.style.display = 'none';
+      workBox.style.display = 'block';
+      prog.value = 0;
+      goBtn.disabled = true;
+
+      try {
+        const arrayBuf = await selectedFile.arrayBuffer();
+
+        // Load original DOCX (ZIP)
+        const originalZip = await JSZip.loadAsync(arrayBuf);
+        const newZip = new JSZip();
+
+        // Re-add entries with max DEFLATE
+        const files = Object.values(originalZip.files);
+
+        // Progress bookkeeping
+        let done = 0;
+        const total = files.filter(f => !f.dir).length || 1;
+
+        for (const entry of files) {
+          if (entry.dir) {
+            newZip.folder(entry.name);
+            continue;
+          }
+          const data = await entry.async('uint8array'); // raw content
+          newZip.file(entry.name, data, {
+            binary: true,
+            compression: "DEFLATE",
+            compressionOptions: { level: 9 },
+            date: entry.date || undefined
+          });
+
+          // Update progress based on file count
+          done++;
+          prog.value = Math.min(100, Math.round((done / total) * 100));
+        }
+
+        // Generate the new DOCX blob
+        const blob = await newZip.generateAsync(
+          {
+            type: "blob",
+            compression: "DEFLATE",
+            compressionOptions: { level: 9 }
+          },
+          // Optional onUpdate callback (progress by bytes)
+          (metadata) => {
+            if (metadata.percent) {
+              prog.value = Math.max(prog.value, Math.round(metadata.percent));
+            }
+          }
+        );
+
+        // Prepare download
+        const origName = selectedFile.name;
+        const outName = origName.replace(/\.(docx|docm)$/i, '_compressed.$1');
+        const url = URL.createObjectURL(blob);
+
+        // Compute savings
+        const origSize = selectedFile.size;
+        const newSize = blob.size;
+        const saved = origSize - newSize;
+        const pct = ((saved / origSize) * 100).toFixed(2);
+
+        result.style.display = 'block';
+        result.innerHTML = `
+          <div class="ok">Done!</div>
+          <p>Original: <span class="mono">${prettyBytes(origSize)}</span><br>
+          Compressed: <span class="mono">${prettyBytes(newSize)}</span><br>
+          Saved: <strong>${prettyBytes(saved)} (${isFinite(pct) ? pct : '0.00'}%)</strong></p>
+          <p><a id="dlLink" href="${url}" download="${outName}">⬇️ Download <span class="mono">${outName}</span></a></p>
+        `;
+
+        // Auto-trigger download
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = outName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        // Re-enable button for another run
+        goBtn.disabled = false;
+
+        // Revoke URL later
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+
+      } catch (err) {
+        console.error(err);
+        errorBox.style.display = 'block';
+        errorBox.textContent = "Failed to compress file. Make sure it's a valid .docx/.docm (unencrypted) Word document.";
+        goBtn.disabled = false;
+      } finally {
+        workBox.style.display = 'none';
+      }
+    });
+  </script>
+</body>
+</html>
