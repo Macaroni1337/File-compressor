@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Word DOCX Compressor (Target Size)</title>
+<title>DOCX Compressor — 30% Target</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
@@ -12,63 +12,35 @@
   h1{margin:0 0 .5rem}
   .card{border:1px solid #ccc;border-radius:14px;padding:16px}
   .row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
-  label{font-weight:600}
-  input[type="range"]{width:240px}
-  button{border:0;border-radius:10px;padding:.6rem 1rem;font-weight:700;cursor:pointer}
+  button{border:0;border-radius:10px;padding:.65rem 1rem;font-weight:700;cursor:pointer}
   .primary{background:#2563eb;color:#fff}
   .muted{opacity:.8}
   .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
   .stats{margin-top:1rem;padding:.75rem;border-radius:10px;background:rgba(0,0,0,.05)}
   .err{color:#dc2626;font-weight:700}
   progress{width:100%;height:12px}
-  .mode{display:flex;gap:1rem;flex-wrap:wrap;margin:.75rem 0}
-  .mode > div{display:flex;gap:.5rem;align-items:center}
+  label{font-weight:600}
+  input[type="range"]{width:240px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Word DOCX Compressor</h1>
+  <h1>Word DOCX Compressor (30% Target)</h1>
   <div class="card">
-    <p>Select a <strong>.docx</strong>. Choose <em>Lossless</em> or <em>Shrink Images</em> with a target size. Everything runs in your browser.</p>
-
     <div class="row">
       <input id="file" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+      <button id="go" class="primary" disabled>Compress & Download</button>
     </div>
 
-    <div class="mode">
-      <div>
-        <input type="radio" name="mode" id="lossless" checked>
-        <label for="lossless">Lossless (re-ZIP only)</label>
-      </div>
-      <div>
-        <input type="radio" name="mode" id="shrink">
-        <label for="shrink">Shrink Images (target size)</label>
-      </div>
-    </div>
-
-    <div id="shrinkPanel" style="display:none">
-      <div class="row">
-        <label for="targetPct">Target size:</label>
-        <input id="targetPct" type="range" min="20" max="90" value="50">
-        <span id="targetPctLabel">50%</span>
-      </div>
-      <div class="row">
-        <label for="maxDim">Max image dimension:</label>
-        <select id="maxDim">
-          <option value="0">Auto (no cap)</option>
-          <option value="2400" selected>2400 px</option>
-          <option value="1920">1920 px</option>
-          <option value="1600">1600 px</option>
-          <option value="1280">1280 px</option>
-        </select>
-        <span class="muted">Large images get downscaled if bigger than this.</span>
-      </div>
-      <p class="muted">Tip: 50% target is a good start. The tool iterates JPEG quality and downscales large images to approach your target without obvious visual loss.</p>
-    </div>
-
-    <div class="row" style="margin-top:.75rem">
-      <button id="go" class="primary" disabled>Compress</button>
-      <span id="sel" class="muted"></span>
+    <div class="row" style="margin-top:.5rem">
+      <label for="maxDim">Max image dimension</label>
+      <select id="maxDim" title="Images larger than this are scaled down (keeps quality on screen)">
+        <option value="1920" selected>1920 px (recommended)</option>
+        <option value="1600">1600 px</option>
+        <option value="1280">1280 px</option>
+        <option value="0">No downscale</option>
+      </select>
+      <span class="muted">Targets ~30% overall reduction aggressively.</span>
     </div>
 
     <div id="work" class="stats" style="display:none">
@@ -78,65 +50,270 @@
 
     <div id="out" class="stats" style="display:none"></div>
     <div id="err" class="stats err" style="display:none"></div>
+    <p class="muted" style="margin-top:.5rem"><strong>Privacy:</strong> Files never leave your browser.</p>
   </div>
-
-  <p class="muted" style="margin-top:1rem"><strong>Notes:</strong> DOCX is a ZIP of XML + media. Lossless re-ZIP rarely saves much. “Shrink Images” modifies images in <span class="mono">/word/media/</span>—often the main size driver.</p>
 </div>
 
 <script>
-const $ = (id)=>document.getElementById(id);
+const $ = id => document.getElementById(id);
 const fileInput = $('file');
 const goBtn = $('go');
 const out = $('out');
-const err = $('err');
+const errBox = $('err');
 const work = $('work');
 const phase = $('phase');
 const prog = $('prog');
-const sel = $('sel');
-const lossless = $('lossless');
-const shrink = $('shrink');
-const shrinkPanel = $('shrinkPanel');
-const targetPct = $('targetPct');
-const targetPctLabel = $('targetPctLabel');
 const maxDimSel = $('maxDim');
 
-let file;
+let file = null;
 
-const prettyBytes=(b)=> {
+const prettyBytes = (b) => {
   if(!isFinite(b)||b<0) return '?';
-  const k=1024, u=['B','KB','MB','GB']; let i=0; while(b>=k&&i<u.length-1){b/=k;i++;}
+  const k=1024, u=['B','KB','MB','GB']; let i=0;
+  while(b>=k && i<u.length-1){ b/=k; i++; }
   return `${b.toFixed(b<10&&i>0?2:0)} ${u[i]}`;
 };
 
 fileInput.addEventListener('change', () => {
-  out.style.display = 'none'; err.style.display='none'; work.style.display='none';
+  out.style.display='none'; errBox.style.display='none'; work.style.display='none';
   file = fileInput.files && fileInput.files[0];
-  if (!file) { sel.textContent=''; goBtn.disabled=true; return; }
-  if (!/\.docx$/i.test(file.name)) { sel.innerHTML=`Selected: <span class="mono">${file.name}</span> — not a .docx`; goBtn.disabled=true; return; }
-  sel.innerHTML=`Selected: <span class="mono">${file.name}</span> — ${prettyBytes(file.size)}`;
-  goBtn.disabled=false;
+  goBtn.disabled = !(file && /\.docx$/i.test(file.name));
 });
 
-lossless.addEventListener('change', ()=>{ shrinkPanel.style.display=shrink.checked?'block':'none'; });
-shrink.addEventListener('change', ()=>{ shrinkPanel.style.display=shrink.checked?'block':'none'; });
-targetPct.addEventListener('input', ()=> targetPctLabel.textContent = targetPct.value + '%');
-
-async function rezipLossless(zip) {
-  const outZip = new JSZip();
-  const files = Object.values(zip.files);
-  let done=0, total=files.length||1;
-  for (const f of files) {
-    if (f.dir){ outZip.folder(f.name); continue; }
-    const data = await f.async('uint8array');
-    outZip.file(f.name, data, {binary:true, compression:'DEFLATE', compressionOptions:{level:9}, date: f.date||undefined});
-    done++; prog.value = Math.round(done/total*100);
-  }
-  return await outZip.generateAsync({type:'blob', compression:'DEFLATE', compressionOptions:{level:9}});
+function readAsTextFromZip(zip, path){
+  return zip.file(path)?.async('string');
 }
 
-async function blobToImageBitmap(blob){
+async function ensureContentTypesForJpeg(origXml){
+  // Make sure jpg/jpeg default exists; keep png even if we convert some
+  let xml = origXml || `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`;
+
+  const hasJpg = /<Default[^>]+Extension="jpg"[^>]+ContentType="image\/jpeg"/i.test(xml);
+  const hasJpeg = /<Default[^>]+Extension="jpeg"[^>]+ContentType="image\/jpeg"/i.test(xml);
+
+  if (!hasJpg || !hasJpeg){
+    // insert before </Types>
+    const insert = []
+    if (!hasJpg) insert.push(`<Default Extension="jpg" ContentType="image/jpeg"/>`);
+    if (!hasJpeg) insert.push(`<Default Extension="jpeg" ContentType="image/jpeg"/>`);
+    xml = xml.replace(/<\/Types>\s*$/i, `${insert.join('')}\n</Types>`);
+  }
+  return xml;
+}
+
+function replaceTargetsInRelsXml(xml, filenameMap){
+  // Replace occurrences of old basenames in Target attributes
+  // filenameMap: { "image1.png": "image1.jpg", ... }
+  for (const [oldName, newName] of Object.entries(filenameMap)){
+    // Replace relative 'media/imageX.png' or '../media/imageX.png'
+    const re = new RegExp(`(Target="(?:\\.\\./)?media/)${oldName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}"`, 'gi');
+    xml = xml.replace(re, `$1${newName}"`);
+  }
+  return xml;
+}
+
+function drawScaled(img, maxDim){
+  let w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  if (maxDim>0 && (w>maxDim || h>maxDim)){
+    const s = Math.min(maxDim/w, maxDim/h);
+    w = Math.max(1, Math.round(w*s));
+    h = Math.max(1, Math.round(h*s));
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', {alpha:false});
+  // Fill white to avoid black background when converting PNG with alpha to JPEG
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,w,h);
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas;
+}
+
+async function decodeToImage(uint8){
+  const blob = new Blob([uint8]);
   const url = URL.createObjectURL(blob);
   try {
-    const img = await createImageBitmap(await (await fetch(url)).blob());
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await new Promise((res,rej)=>{
+      img.onload = ()=>res();
+      img.onerror = ()=>rej(new Error('Image decode failed'));
+    });
     return img;
-  } f
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function transcodeToJpeg(uint8, quality, maxDim){
+  const img = await decodeToImage(uint8);
+  const canvas = drawScaled(img, maxDim);
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+async function buildCompressed(zip, opts){
+  const maxDim = opts.maxDim|0;
+  const quality = opts.quality ?? 0.72;
+  const pngToJpeg = true; // convert PNG photos to JPEG for best gains
+
+  // Gather list of media images
+  const allPaths = Object.keys(zip.files);
+  const mediaPaths = allPaths.filter(p => /^word\/media\//i.test(p) && !zip.files[p].dir);
+
+  // Map of renamed files when converting PNG -> JPG
+  const filenameMap = {}; // oldBaseName -> newBaseName
+
+  // Preload originals for media
+  const originals = {};
+  for (const p of mediaPaths){
+    originals[p] = await zip.file(p).async('uint8array');
+  }
+
+  // 1) Create trial zip
+  const trial = new JSZip();
+
+  // Copy everything except media, .rels (we'll adjust), and thumbnail
+  const relsPaths = allPaths.filter(p => /_rels\/.+\.rels$/i.test(p) && !zip.files[p].dir);
+  const contentTypesPath = '[Content_Types].xml';
+  const skip = new Set(mediaPaths.concat(relsPaths).concat(['docProps/thumbnail.jpeg', contentTypesPath]));
+
+  for (const p of allPaths){
+    if (skip.has(p)) continue;
+    const f = zip.files[p];
+    if (f.dir){ trial.folder(p); }
+    else {
+      const data = await f.async('uint8array');
+      trial.file(p, data, {binary:true, compression:'DEFLATE', compressionOptions:{level:9}, date:f.date||undefined});
+    }
+  }
+
+  // 2) Add optimized media
+  let done = 0;
+  for (const p of mediaPaths){
+    const base = p.split('/').pop();
+    const lower = base.toLowerCase();
+    const isJpeg = /\.(jpe?g)$/i.test(lower);
+    const isPng  = /\.png$/i.test(lower);
+
+    let newBase = base;
+    let outBytes;
+
+    try {
+      if (isJpeg){
+        outBytes = await transcodeToJpeg(originals[p], quality, maxDim);
+        // keep same name/extension for jpeg → okay
+      } else if (isPng && pngToJpeg){
+        outBytes = await transcodeToJpeg(originals[p], quality, maxDim);
+        newBase = base.replace(/\.png$/i, '.jpg');
+        filenameMap[base] = newBase;
+      } else {
+        // Other formats (gif, emf, etc.) — copy as-is
+        outBytes = originals[p];
+      }
+    } catch (e){
+      // Fallback to original on decode failure
+      outBytes = originals[p];
+    }
+
+    const outPath = `word/media/${newBase}`;
+    trial.file(outPath, outBytes, {binary:true, compression:'STORE'}); // JPEG already compressed
+
+    done++; $('prog').value = Math.round((done/mediaPaths.length)*60);
+  }
+
+  // 3) Fix relationships after possible renames
+  for (const p of relsPaths){
+    const xml = await zip.file(p).async('string');
+    const patched = replaceTargetsInRelsXml(xml, filenameMap);
+    trial.file(p, patched);
+  }
+
+  // 4) Ensure Content Types allow jpg/jpeg; copy & patch as needed
+  let ctXml = await readAsTextFromZip(zip, contentTypesPath);
+  ctXml = await ensureContentTypesForJpeg(ctXml);
+  trial.file(contentTypesPath, ctXml);
+
+  // 5) Generate blob
+  const blob = await trial.generateAsync({type:'blob', compression:'DEFLATE', compressionOptions:{level:9}},
+    (meta)=>{ prog.value = Math.max(prog.value, Math.min(100, Math.round(60 + (meta.percent||0)/2))); });
+
+  return blob;
+}
+
+async function compressWithTarget(buf, targetRatio, maxDim){
+  const zip = await JSZip.loadAsync(buf);
+  const origZipBlob = await new JSZip(zip).generateAsync({type:'blob'}); // baseline for size
+  const origSize = origZipBlob.size;
+  const target = Math.max(1, Math.round(origSize * targetRatio));
+
+  // Iteratively tighten JPEG quality to approach target
+  let qLow = 0.55, qHigh = 0.8; // start range
+  let best = {blob: origZipBlob, size: origSize, q: null};
+
+  for (let i=0; i<5; i++){
+    const q = (i===0) ? 0.72 : (qLow + qHigh) / 2;
+    phase.textContent = `Optimizing images… quality ≈ ${Math.round(q*100)}/100`;
+    const trialBlob = await buildCompressed(zip, {quality: q, maxDim});
+    const s = trialBlob.size;
+    if (s < best.size) best = {blob: trialBlob, size: s, q};
+
+    if (s > target){ // not small enough → lower quality
+      qHigh = q;
+    } else { // at/under target → try nudging quality up a bit
+      qLow = q;
+    }
+    if (Math.abs(s - target)/target < 0.05) break; // within 5% of goal
+  }
+  return {blob: best.blob, origSize};
+}
+
+goBtn.addEventListener('click', async () => {
+  if (!file) return;
+  out.style.display='none'; errBox.style.display='none'; work.style.display='block'; prog.value=0;
+
+  try{
+    const targetRatio = 0.70; // aim for 30%+ reduction
+    const maxDim = parseInt(maxDimSel.value, 10);
+
+    phase.textContent = 'Reading DOCX…';
+    const buf = await file.arrayBuffer();
+
+    const {blob, origSize} = await compressWithTarget(buf, targetRatio, maxDim);
+
+    const now = blob.size;
+    const saved = Math.max(0, origSize - now);
+    const pct = (saved/origSize*100)||0;
+
+    out.style.display='block';
+    out.innerHTML = `
+      <div><strong>Done.</strong></div>
+      <p>Original: <span class="mono">${prettyBytes(origSize)}</span><br>
+      Compressed: <span class="mono">${prettyBytes(now)}</span><br>
+      Saved: <strong>${prettyBytes(saved)} (${pct.toFixed(1)}%)</strong></p>
+      <p><a id="dl" href="#" class="mono">⬇️ Download</a></p>
+    `;
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name.replace(/\.docx$/i, '_compressed.docx');
+    // set link & auto-download
+    const link = $('dl');
+    link.href = url; link.setAttribute('download', a.download);
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 15000);
+
+  } catch(e){
+    console.error(e);
+    errBox.style.display='block';
+    errBox.textContent = 'Failed to process file. Make sure it’s a valid, unencrypted .docx.';
+  } finally {
+    work.style.display='none';
+  }
+});
+</script>
+</body>
+</html>
